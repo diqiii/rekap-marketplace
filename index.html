@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Master Rekap ADV DIQI (Anti-Blank & Bypass Bug TikTok)</title>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f0f2f5; color: #1c1e21; }
+        .container { background: #fff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 1000px; margin: auto; }
+        h2 { color: #000; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .grid-upload { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0; }
+        .box { border: 2px dashed #999; padding: 15px; border-radius: 8px; background: #fafafa; text-align: center; }
+        label { font-weight: bold; display: block; margin-bottom: 8px; font-size: 15px; color: #333; }
+        input[type="file"] { width: 100%; font-size: 13px; margin-bottom: 5px; }
+        .note { font-size: 12px; color: #666; display: block; }
+        button { background-color: #333; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; font-size: 16px; }
+        button:hover { background-color: #555; }
+        #btnDownload { background-color: #28a745; margin-top: 15px; display: none; }
+        #btnDownload:hover { background-color: #218838; }
+        .table-wrapper { overflow-x: auto; margin-top: 25px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; white-space: nowrap; }
+        th { background-color: #333; color: white; }
+        .status { font-weight: bold; margin-top: 15px; padding: 10px; border-radius: 4px; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📊 Master Rekap ADV DIQI (Bypass Bug TikTok Edition)</h2>
+    <p>Upload file pesanan & pencairan. Sistem menggunakan pencocokan ID super ketat dan otomatis melewati limit dimensi XML Excel bawaan TikTok.</p>
+
+    <div class="box" style="background:#eef7ff; border-color:#7aa7d9; margin-bottom:20px;">
+        <label>🧮 Data HPP (Harga Pokok / Modal) — Tersimpan di Cache Browser</label>
+        <span class="note" style="margin-bottom:10px; display:block;">Upload file dengan kolom <b>SKU</b> dan <b>Harga Modal</b>. Sekali disimpan, data ini otomatis dipakai terus tanpa upload ulang setiap proses pesanan baru.</span>
+        <input type="file" id="fHPP" accept=".xlsx, .xls, .csv" multiple>
+        <button type="button" onclick="prosesHPP()" style="background-color:#1f6fb2; margin-top:8px;">💾 Simpan / Update Data HPP</button>
+        <div id="hppStatus" style="margin-top:12px; font-size:13px;"></div>
+    </div>
+
+    <div class="grid-upload">
+        <div class="box">
+            <label>📁 1. File Pesanan (Order)</label>
+            <input type="file" id="fPesanan" accept=".xlsx, .xls, .csv" multiple>
+            <span class="note">Upload file pesanan Shopee & TikTok</span>
+        </div>
+        <div class="box">
+            <label>💰 2. File Pencairan (Saldo/Income)</label>
+            <input type="file" id="fSaldo" accept=".xlsx, .xls, .csv" multiple>
+            <span class="note">Upload file pencairan Shopee & TikTok</span>
+        </div>
+    </div>
+
+    <button onclick="prosesData()">Proses & Gabungkan Semua File</button>
+    <button id="btnDownload" onclick="downloadExcel()">Download Format ADV DIQI (.xlsx)</button>
+    
+    <div id="statusMsg" class="status"></div>
+
+    <div class="table-wrapper">
+        <table id="previewTable">
+            <thead id="tableHead"></thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    let finalData = [];
+    let hppMap = {}; // cache: { SKU_CLEAN: hargaModal }
+    const KOLOM_ADV_DIQI = [
+        "No.", "SKU", "Nama Produk", "Jumlah", "No. Resi", "Ekspedisi", 
+        "Tanggal", "Platform", "Nama Toko", "Kirim Resi", "Packing", 
+        "Drop Off", "Dikirim", "Sampai", "Retur", "Keterangan", "Omset Bersih",
+        "HPP", "Laba Bersih"
+    ];
+
+    // FUNGSI SUPER CLEANER: Ngebabat habis semua spasi, koma, kutip, dll. Sisakan huruf & angka!
+    function cleanID(id) {
+        if (!id) return "";
+        return String(id).replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    }
+
+    // Cleaner khusus SKU: trim + uppercase saja (SKU boleh punya tanda strip/underscore)
+    function cleanSKU(sku) {
+        if (!sku) return "";
+        return String(sku).trim().toUpperCase();
+    }
+
+    // ============== FITUR CACHE HPP (localStorage) ==============
+    function loadHPPFromCache() {
+        try {
+            const raw = localStorage.getItem('hppCacheData');
+            hppMap = raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            hppMap = {};
+        }
+        updateHPPStatusUI();
+    }
+
+    function saveHPPToCache() {
+        localStorage.setItem('hppCacheData', JSON.stringify(hppMap));
+        localStorage.setItem('hppCacheUpdatedAt', new Date().toISOString());
+        updateHPPStatusUI();
+    }
+
+    function updateHPPStatusUI() {
+        const el = document.getElementById('hppStatus');
+        if (!el) return;
+        const count = Object.keys(hppMap).length;
+        if (count === 0) {
+            el.innerHTML = `<span style="color:#888;">Belum ada data HPP tersimpan. Upload file SKU + Harga Modal di atas.</span>`;
+        } else {
+            const updatedAt = localStorage.getItem('hppCacheUpdatedAt');
+            const tgl = updatedAt ? new Date(updatedAt).toLocaleString('id-ID') : '-';
+            el.innerHTML = `<span style="color:#28a745; font-weight:bold;">✅ ${count} SKU tersimpan (update terakhir: ${tgl})</span> ` +
+                `<button type="button" onclick="hapusHPP()" style="width:auto; background:#dc3545; padding:6px 14px; margin-left:10px; font-size:13px;">🗑️ Hapus Data HPP</button>`;
+        }
+    }
+
+    function hapusHPP() {
+        if (!confirm("Yakin mau hapus semua data HPP dari cache? Kamu perlu upload ulang file HPP setelahnya.")) return;
+        hppMap = {};
+        localStorage.removeItem('hppCacheData');
+        localStorage.removeItem('hppCacheUpdatedAt');
+        updateHPPStatusUI();
+    }
+
+    // Cari kolom SKU & Harga Modal secara fleksibel dari file HPP
+    function extractHPP(rawArray) {
+        let map = {};
+        if (!rawArray) return map;
+
+        let headerFound = false;
+        let skuIdx = -1, hargaIdx = -1;
+
+        for (let i = 0; i < rawArray.length; i++) {
+            const row = rawArray[i];
+            if (!row || row.length === 0) continue;
+
+            if (!headerFound) {
+                for (let j = 0; j < row.length; j++) {
+                    let cellStr = String(row[j]).trim().toLowerCase();
+                    if (cellStr === "sku" || cellStr.includes("kode sku") || cellStr.includes("sku produk") || cellStr.includes("seller sku")) {
+                        skuIdx = j;
+                    }
+                    if (cellStr.includes("harga modal") || cellStr === "hpp" || cellStr.includes("harga pokok") || cellStr.includes("modal")) {
+                        hargaIdx = j;
+                    }
+                }
+                if (skuIdx !== -1 && hargaIdx !== -1) headerFound = true;
+            } else {
+                let sku = cleanSKU(row[skuIdx]);
+                let hargaText = String(row[hargaIdx] || "").replace(/[Rp\s,]/gi, '');
+                let harga = parseFloat(hargaText);
+                if (sku && !isNaN(harga)) {
+                    map[sku] = harga;
+                }
+            }
+        }
+        return map;
+    }
+
+    async function prosesHPP() {
+        const files = document.getElementById('fHPP').files;
+        if (files.length === 0) {
+            alert("Upload file HPP dulu ya (harus ada kolom SKU dan Harga Modal).");
+            return;
+        }
+        try {
+            let totalMasuk = 0;
+            for (let i = 0; i < files.length; i++) {
+                let rawData = await readExcelRaw(files[i]);
+                let fileMap = extractHPP(rawData);
+                if (Object.keys(fileMap).length === 0) {
+                    alert(`File "${files[i].name}" nggak ketemu kolom SKU/Harga Modal yang cocok. Pastikan ada header "SKU" dan "Harga Modal".`);
+                    continue;
+                }
+                totalMasuk += Object.keys(fileMap).length;
+                hppMap = { ...hppMap, ...fileMap }; // SKU baru/lama otomatis di-update pakai harga terbaru
+            }
+            saveHPPToCache();
+            document.getElementById('fHPP').value = "";
+            if (totalMasuk > 0) alert("Data HPP berhasil disimpan ke cache browser!");
+        } catch (e) {
+            console.error(e);
+            alert("Gagal memproses file HPP. Cek console browser.");
+        }
+    }
+
+    window.addEventListener('DOMContentLoaded', loadHPPFromCache);
+    // ================================================================
+
+    function parseDateCustom(dateStr) {
+        if (!dateStr) return 0;
+        let d = String(dateStr).trim();
+        if (!isNaN(d) && !d.includes("-") && !d.includes("/")) {
+            let excelDays = parseFloat(d);
+            return new Date(Math.round((excelDays - 25569) * 86400 * 1000)).getTime(); 
+        }
+        let parts = d.split(" ");
+        let datePart = parts[0];
+        let timePart = parts[1] || "00:00:00";
+        let year, month, day;
+        let dateSplit = datePart.includes("-") ? datePart.split("-") : datePart.split("/");
+        if (dateSplit.length === 3) {
+            if (dateSplit[0].length === 4) { year = dateSplit[0]; month = dateSplit[1]; day = dateSplit[2]; } 
+            else { day = dateSplit[0]; month = dateSplit[1]; year = dateSplit[2]; }
+        }
+        let timeSplit = timePart.split(":");
+        let hour = timeSplit[0] || 0; let minute = timeSplit[1] || 0; let second = timeSplit[2] || 0;
+        if (year && month && day) return new Date(year, month - 1, day, hour, minute, second).getTime();
+        let fallback = new Date(d).getTime();
+        return isNaN(fallback) ? 0 : fallback;
+    }
+
+    function formatDateToDDMMYYYY(timestamp) {
+        if (!timestamp) return "";
+        let d = new Date(timestamp);
+        let day = String(d.getDate()).padStart(2, '0');
+        let month = String(d.getMonth() + 1).padStart(2, '0');
+        let year = d.getFullYear();
+        return `${day}/${month}/${year}`;
+    }
+
+    // MEMBACA EXCEL SEBAGAI ARRAY MENTAH
+    function readExcelRaw(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array', cellText: true, cellDates: false });
+                const ws = workbook.Sheets[workbook.SheetNames[0]];
+
+                // --- JURUS BYPASS BUG DIMENSI TIKTOK ---
+                let maxRow = 0, maxCol = 0;
+                for (let cellAddress in ws) {
+                    if (cellAddress[0] === '!') continue;
+                    let decoded = XLSX.utils.decode_cell(cellAddress);
+                    if (decoded.r > maxRow) maxRow = decoded.r;
+                    if (decoded.c > maxCol) maxCol = decoded.c;
+                }
+                ws['!ref'] = XLSX.utils.encode_range({s: {c:0, r:0}, e: {c:maxCol, r:maxRow}});
+                // ----------------------------------------
+
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+                
+                const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+                for (let R = range.s.r; R <= range.e.r; R++) {
+                    for (let C = range.s.c; C <= range.e.c; C++) {
+                        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+                        const cell = ws[addr];
+                        if (cell && cell.t === 'n' && Math.abs(cell.v) > 9007199254740991) {
+                            rows[R][C] = cell.w || String(cell.v);
+                        }
+                    }
+                }
+                resolve(rows);
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    // MEMBACA EXCEL SEBAGAI OBJECT
+    function readExcelObj(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array', cellText: true, cellDates: false });
+                const ws = workbook.Sheets[workbook.SheetNames[0]];
+                
+                // --- JURUS BYPASS BUG DIMENSI TIKTOK ---
+                let maxRow = 0, maxCol = 0;
+                for (let cellAddress in ws) {
+                    if (cellAddress[0] === '!') continue;
+                    let decoded = XLSX.utils.decode_cell(cellAddress);
+                    if (decoded.r > maxRow) maxRow = decoded.r;
+                    if (decoded.c > maxCol) maxCol = decoded.c;
+                }
+                ws['!ref'] = XLSX.utils.encode_range({s: {c:0, r:0}, e: {c:maxCol, r:maxRow}});
+                // ----------------------------------------
+
+                const range = XLSX.utils.decode_range(ws['!ref']);
+                for (let R = range.s.r; R <= range.e.r; R++) {
+                    for (let C = range.s.c; C <= range.e.c; C++) {
+                        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+                        const cell = ws[addr];
+                        if (cell && cell.t === 'n' && Math.abs(cell.v) > 9007199254740991) {
+                            cell.t = 's';
+                            cell.v = cell.w || String(cell.v);
+                        }
+                    }
+                }
+                resolve(XLSX.utils.sheet_to_json(ws, { defval: "", raw: false }));
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function extractSaldo(rawArray) {
+        let map = {};
+        if (!rawArray) return map;
+
+        let headerFound = false;
+        let noPesIdx = -1, jumlahIdx = -1, dateIdx = -1;
+
+        for (let i = 0; i < rawArray.length; i++) {
+            const row = rawArray[i];
+            if (!row || row.length === 0) continue;
+
+            if (!headerFound) {
+                // PENCARIAN KOLOM SUPER FLEKSIBEL
+                for (let j = 0; j < row.length; j++) {
+                    let cellStr = String(row[j]).trim().toLowerCase();
+                    
+                    if (cellStr.includes("no. pesanan") || cellStr.includes("order/adjustment id") || cellStr.includes("id pesanan/penyesuaian") || cellStr === "order id") {
+                        noPesIdx = j;
+                    }
+                    if (cellStr === "jumlah" || cellStr === "nominal" || cellStr.includes("total settlement amount") || cellStr.includes("jumlah penyelesaian") || cellStr.includes("settlement amount")) {
+                        // Hindari salah tangkap total revenue
+                        if (!cellStr.includes("revenue") && !cellStr.includes("refund")) {
+                            jumlahIdx = j;
+                        }
+                    }
+                    if (cellStr.includes("waktu transaksi") || cellStr.includes("order created time") || cellStr.includes("waktu pesanan dibuat")) {
+                        dateIdx = j;
+                    }
+                }
+                if (noPesIdx !== -1 && jumlahIdx !== -1) headerFound = true;
+            } else {
+                let noPes = cleanID(row[noPesIdx]);
+                let uangText = String(row[jumlahIdx] || "").replace(/[Rp\s,]/gi, ''); 
+                let val = parseFloat(uangText);
+                let dateVal = dateIdx !== -1 ? String(row[dateIdx]).trim() : "";
+                
+                if (isNaN(val)) val = undefined;
+
+                if (noPes) {
+                    if (!map[noPes]) map[noPes] = { omset: val, date: dateVal };
+                    else if (val !== undefined) map[noPes].omset = (map[noPes].omset !== undefined ? map[noPes].omset : 0) + val;
+                }
+            }
+        }
+        return map;
+    }
+
+    async function getCombinedSaldo(files) {
+        let masterMap = {};
+        for (let i = 0; i < files.length; i++) {
+            let rawData = await readExcelRaw(files[i]);
+            let fileMap = extractSaldo(rawData);
+            for (let key in fileMap) {
+                if (!masterMap[key]) masterMap[key] = { omset: undefined, date: "" };
+                if (fileMap[key].omset !== undefined) {
+                    masterMap[key].omset = (masterMap[key].omset || 0) + fileMap[key].omset;
+                }
+                if (fileMap[key].date && !masterMap[key].date) {
+                    masterMap[key].date = fileMap[key].date;
+                }
+            }
+        }
+        return masterMap;
+    }
+
+    async function prosesData() {
+        const msg = document.getElementById('statusMsg');
+        const fPesananFiles = document.getElementById('fPesanan').files;
+        const fSaldoFiles = document.getElementById('fSaldo').files;
+
+        if (fPesananFiles.length === 0) {
+            alert("Bro, upload minimal 1 file pesanan ya!");
+            return;
+        }
+
+        msg.style.display = "block";
+        msg.style.backgroundColor = "#fff3cd";
+        msg.innerText = "Memproses pesanan dan menghitung bypass batas XML...";
+
+        try {
+            const masterSaldoMap = await getCombinedSaldo(fSaldoFiles);
+            let pesananMap = {};
+
+            for (let i = 0; i < fPesananFiles.length; i++) {
+                let ordData = await readExcelObj(fPesananFiles[i]);
+                
+                ordData.forEach(p => {
+                    let pClean = {};
+                    for (let key in p) pClean[key.trim()] = p[key];
+
+                    let rawNoPesanan = pClean["No. Pesanan"] || pClean["Order ID"] || "";
+                    if (!rawNoPesanan || rawNoPesanan === "Platform unique order ID.") return;
+
+                    let noPesanan = cleanID(rawNoPesanan); 
+
+                    let status = String(pClean["Status Pesanan"] || pClean["Order Status"] || pClean["Order status"] || "").trim();
+                    if (status.toLowerCase().includes("batal") || status.toLowerCase().includes("cancel")) return;
+
+                    let isShopee = pClean["No. Pesanan"] !== undefined;
+                    let platform = isShopee ? "Shopee" : "Tiktok";
+
+                    if (pesananMap[noPesanan]) {
+                        if (platform === "Tiktok") {
+                            pesananMap[noPesanan].jumlah += parseInt(pClean["Quantity"] || pClean["Jumlah"] || 0);
+                        }
+                        return; 
+                    }
+
+                    // --- FUZZY MATCHER 12 DIGIT UNTUK TIKTOK ---
+                    let saldoInfo = masterSaldoMap[noPesanan];
+                    
+                    if (!saldoInfo && noPesanan.length >= 15) {
+                        let prefix = noPesanan.substring(0, 12);
+                        for (let k in masterSaldoMap) {
+                            if (k.length >= 15 && k.startsWith(prefix)) {
+                                saldoInfo = masterSaldoMap[k];
+                                break;
+                            }
+                        }
+                    }
+                    saldoInfo = saldoInfo || {};
+                    // ------------------------------------------
+
+                    let tanggalAsli = pClean["Waktu Pesanan Dibuat"] || pClean["Created Time"] || pClean["Waktu Dibuat"] || saldoInfo.date || "";
+                    let ekspedisi = pClean["Opsi Pengiriman"] || pClean["Shipping Provider Name"] || pClean["Shipping Provider"] || pClean["Penyedia Pengiriman"] || "";
+
+                    let jumlah = 1;
+                    if (isShopee) {
+                        jumlah = parseInt(pClean["Jumlah Produk di Pesan"] || pClean["Jumlah"] || 1);
+                    } else {
+                        jumlah = parseInt(pClean["Quantity"] || pClean["Jumlah"] || 1);
+                    }
+
+                    let namaProduk = pClean["Nama Produk"] || pClean["Product Name"] || "";
+
+                    pesananMap[noPesanan] = {
+                        platform: platform,
+                        noPesanan: noPesanan,
+                        status: status,
+                        sku: pClean["Nomor Referensi SKU"] || pClean["SKU Induk"] || pClean["Seller SKU"] || pClean["SKU ID"] || "",
+                        namaProduk: namaProduk,
+                        jumlah: jumlah,
+                        resi: pClean["No. Resi"] || pClean["Tracking ID"] || pClean["Nomor Resi"] || "",
+                        ekspedisi: ekspedisi,
+                        timestamp: parseDateCustom(tanggalAsli),
+                        keterangan: pClean["Catatan dari Pembeli"] || pClean["Buyer Message"] || pClean["Catatan"] || "",
+                        omset: saldoInfo.omset !== undefined ? saldoInfo.omset : ""
+                    };
+                });
+            }
+
+            let pesananList = Object.values(pesananMap);
+            pesananList.sort((a, b) => a.timestamp - b.timestamp);
+
+            finalData = pesananList.map((p, index) => {
+                let statusLower = p.status.toLowerCase();
+                let isDone = statusLower === "selesai" || statusLower === "completed" || statusLower === "delivered" || (p.omset !== undefined && p.omset !== "");
+
+                let hargaModal = hppMap[cleanSKU(p.sku)];
+                let hppTotal = hargaModal !== undefined ? hargaModal * p.jumlah : "";
+                let labaBersih = (p.omset !== "" && hppTotal !== "") ? (p.omset - hppTotal) : "";
+
+                return {
+                    "No.": index + 1,
+                    "SKU": p.sku,
+                    "Nama Produk": p.namaProduk,
+                    "Jumlah": p.jumlah,
+                    "No. Resi": p.resi,
+                    "Ekspedisi": p.ekspedisi,
+                    "Tanggal": formatDateToDDMMYYYY(p.timestamp), 
+                    "Platform": p.platform,
+                    "Nama Toko": "", 
+                    "Kirim Resi": isDone || (statusLower !== "belum bayar" && statusLower !== "unpaid" && p.status !== ""),
+                    "Packing": isDone || ["perlu dikirim", "dikirim", "awaiting shipment", "shipped"].includes(statusLower),
+                    "Drop Off": isDone || ["dikirim", "shipped"].includes(statusLower),
+                    "Dikirim": isDone || ["dikirim", "shipped"].includes(statusLower),
+                    "Sampai": isDone,
+                    "Retur": statusLower.includes("pengembalian") || statusLower.includes("return"),
+                    "Keterangan": p.keterangan,
+                    "Omset Bersih": p.omset,
+                    "HPP": hppTotal,
+                    "Laba Bersih": labaBersih
+                };
+            });
+
+            renderPreview();
+            
+            let matched = pesananList.filter(p => p.omset !== "").length;
+            let total = pesananList.length;
+            let hppMatched = pesananList.filter(p => hppMap[cleanSKU(p.sku)] !== undefined).length;
+
+            msg.style.backgroundColor = "#d4edda";
+            msg.innerText = `BOOM! Selesai! ${total} pesanan diproses, ${matched} cocok dengan data pencairan, ${hppMatched} cocok dengan data HPP (Bypass Mode Aktif).`;
+            document.getElementById('btnDownload').style.display = "block";
+
+        } catch (error) {
+            console.error(error);
+            msg.style.backgroundColor = "#f8d7da";
+            msg.innerText = "Waduh, ada error. Coba cek console browser atau refresh halaman.";
+        }
+    }
+
+    function renderPreview() {
+        const head = document.getElementById('tableHead');
+        const body = document.getElementById('tableBody');
+        
+        head.innerHTML = "<tr>" + KOLOM_ADV_DIQI.map(k => `<th>${k}</th>`).join('') + "</tr>";
+        
+        body.innerHTML = finalData.slice(0, 5).map(row => {
+            return "<tr>" + KOLOM_ADV_DIQI.map(k => `<td>${row[k] === "" ? "" : row[k]}</td>`).join('') + "</tr>";
+        }).join('') + (finalData.length > 5 ? `<tr><td colspan="${KOLOM_ADV_DIQI.length}" style="text-align:center; background:#f9f9f9;">... dan ${finalData.length - 5} baris pesanan lainnya ...</td></tr>` : "");
+    }
+
+    function downloadExcel() {
+        const ws = XLSX.utils.json_to_sheet(finalData, { header: KOLOM_ADV_DIQI });
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "ADV DIQI");
+        XLSX.writeFile(wb, `Master_ADV_DIQI_Fix_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+</script>
+
+</body>
+</html>
