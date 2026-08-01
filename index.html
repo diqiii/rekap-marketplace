@@ -404,7 +404,9 @@
 
                     let jumlah = 1;
                     if (isShopee) {
-                        jumlah = parseInt(pClean["Jumlah Produk di Pesan"] || pClean["Jumlah"] || 1);
+                        // "Jumlah" = quantity per baris/SKU. "Jumlah Produk di Pesan" itu TOTAL quantity
+                        // se-order (diulang di tiap baris) — jangan dipakai kalau order-nya multi-SKU.
+                        jumlah = parseInt(pClean["Jumlah"] || pClean["Jumlah Produk di Pesan"] || 1);
                     } else {
                         jumlah = parseInt(pClean["Quantity"] || pClean["Jumlah"] || 1);
                     }
