@@ -35,7 +35,10 @@
         <label>🧮 Data HPP (Harga Pokok / Modal) — Tersimpan di Cache Browser</label>
         <span class="note" style="margin-bottom:10px; display:block;">Upload file dengan kolom <b>SKU</b> dan <b>Harga Modal</b>. Sekali disimpan, data ini otomatis dipakai terus tanpa upload ulang setiap proses pesanan baru.</span>
         <input type="file" id="fHPP" accept=".xlsx, .xls, .csv" multiple>
-        <button type="button" onclick="prosesHPP()" style="background-color:#1f6fb2; margin-top:8px;">💾 Simpan / Update Data HPP</button>
+        <div style="display:flex; gap:10px; margin-top:8px;">
+            <button type="button" onclick="prosesHPP()" style="background-color:#1f6fb2;">💾 Simpan / Update Data HPP</button>
+            <button type="button" onclick="downloadTemplateHPP()" style="background-color:#6c757d;">📥 Download Template HPP</button>
+        </div>
         <div id="hppStatus" style="margin-top:12px; font-size:13px;"></div>
     </div>
 
@@ -53,7 +56,7 @@
     </div>
 
     <button onclick="prosesData()">Proses & Gabungkan Semua File</button>
-    <button id="btnDownload" onclick="downloadExcel()">Download Format ADV DIQI (.xlsx)</button>
+    <button id="btnDownload" onclick="downloadExcel()">Download Rekap</button>
     
     <div id="statusMsg" class="status"></div>
 
@@ -515,7 +518,18 @@
         const ws = XLSX.utils.json_to_sheet(finalData, { header: KOLOM_ADV_DIQI });
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "ADV DIQI");
-        XLSX.writeFile(wb, `Master_ADV_DIQI_Fix_${new Date().toISOString().slice(0,10)}.xlsx`);
+        XLSX.writeFile(wb, "rekap data.xls");
+    }
+
+    function downloadTemplateHPP() {
+        const templateData = [
+            { "SKU": "CONTOH-SKU-001", "Harga Modal": 15000 },
+            { "SKU": "CONTOH-SKU-002", "Harga Modal": 27500 }
+        ];
+        const ws = XLSX.utils.json_to_sheet(templateData, { header: ["SKU", "Harga Modal"] });
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Template HPP");
+        XLSX.writeFile(wb, "template hpp.xlsx");
     }
 </script>
 
