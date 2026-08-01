@@ -72,7 +72,7 @@
     let finalData = [];
     let hppMap = {}; // cache: { SKU_CLEAN: hargaModal }
     const KOLOM_ADV_DIQI = [
-        "No.", "SKU", "Nama Produk", "Jumlah", "No. Resi", "Ekspedisi", 
+        "No.", "No. Pesanan", "SKU", "Nama Produk", "Jumlah", "No. Resi", "Ekspedisi", 
         "Tanggal", "Platform", "Nama Toko", "Kirim Resi", "Packing", 
         "Drop Off", "Dikirim", "Sampai", "Retur", "Keterangan", "Omset Bersih",
         "HPP", "Laba Bersih"
@@ -402,11 +402,21 @@
                     let isShopee = pClean["No. Pesanan"] !== undefined;
                     let platform = isShopee ? "Shopee" : "Tiktok";
 
+                    let jumlah = 1;
+                    if (isShopee) {
+                        jumlah = parseInt(pClean["Jumlah Produk di Pesan"] || pClean["Jumlah"] || 1);
+                    } else {
+                        jumlah = parseInt(pClean["Quantity"] || pClean["Jumlah"] || 1);
+                    }
+
+                    let namaProduk = pClean["Nama Produk"] || pClean["Product Name"] || "";
+                    let sku = pClean["Nomor Referensi SKU"] || pClean["SKU Induk"] || pClean["Seller SKU"] || pClean["SKU ID"] || "";
+
+                    // Kalau order-nya udah pernah ada tapi ini baris SKU/produk lain (order isi >1 jenis barang),
+                    // catat sebagai item terpisah biar HPP-nya nggak rancu, bukan cuma nambah jumlah ke SKU pertama.
                     if (pesananMap[noPesanan]) {
-                        if (platform === "Tiktok") {
-                            pesananMap[noPesanan].jumlah += parseInt(pClean["Quantity"] || pClean["Jumlah"] || 0);
-                        }
-                        return; 
+                        pesananMap[noPesanan].items.push({ sku: sku, namaProduk: namaProduk, jumlah: jumlah });
+                        return;
                     }
 
                     // --- FUZZY MATCHER 12 DIGIT UNTUK TIKTOK ---
@@ -427,22 +437,11 @@
                     let tanggalAsli = pClean["Waktu Pesanan Dibuat"] || pClean["Created Time"] || pClean["Waktu Dibuat"] || saldoInfo.date || "";
                     let ekspedisi = pClean["Opsi Pengiriman"] || pClean["Shipping Provider Name"] || pClean["Shipping Provider"] || pClean["Penyedia Pengiriman"] || "";
 
-                    let jumlah = 1;
-                    if (isShopee) {
-                        jumlah = parseInt(pClean["Jumlah Produk di Pesan"] || pClean["Jumlah"] || 1);
-                    } else {
-                        jumlah = parseInt(pClean["Quantity"] || pClean["Jumlah"] || 1);
-                    }
-
-                    let namaProduk = pClean["Nama Produk"] || pClean["Product Name"] || "";
-
                     pesananMap[noPesanan] = {
                         platform: platform,
                         noPesanan: noPesanan,
                         status: status,
-                        sku: pClean["Nomor Referensi SKU"] || pClean["SKU Induk"] || pClean["Seller SKU"] || pClean["SKU ID"] || "",
-                        namaProduk: namaProduk,
-                        jumlah: jumlah,
+                        items: [{ sku: sku, namaProduk: namaProduk, jumlah: jumlah }],
                         resi: pClean["No. Resi"] || pClean["Tracking ID"] || pClean["Nomor Resi"] || "",
                         ekspedisi: ekspedisi,
                         timestamp: parseDateCustom(tanggalAsli),
@@ -455,45 +454,67 @@
             let pesananList = Object.values(pesananMap);
             pesananList.sort((a, b) => a.timestamp - b.timestamp);
 
-            finalData = pesananList.map((p, index) => {
+            finalData = [];
+            let rowIndex = 0;
+
+            pesananList.forEach(p => {
                 let statusLower = p.status.toLowerCase();
                 let isDone = statusLower === "selesai" || statusLower === "completed" || statusLower === "delivered" || (p.omset !== undefined && p.omset !== "");
 
-                let hargaModal = hppMap[cleanSKU(p.sku)];
-                let hppTotal = hargaModal !== undefined ? hargaModal * p.jumlah : "";
-                let labaBersih = (p.omset !== "" && hppTotal !== "") ? (p.omset - hppTotal) : "";
+                // Hitung total HPP order = jumlah HPP semua item/SKU di dalam order ini
+                let totalHPPOrder = 0;
+                let semuaHargaKetemu = true;
+                p.items.forEach(it => {
+                    let hargaModal = hppMap[cleanSKU(it.sku)];
+                    if (hargaModal === undefined) semuaHargaKetemu = false;
+                    else totalHPPOrder += hargaModal * it.jumlah;
+                });
 
-                return {
-                    "No.": index + 1,
-                    "SKU": p.sku,
-                    "Nama Produk": p.namaProduk,
-                    "Jumlah": p.jumlah,
-                    "No. Resi": p.resi,
-                    "Ekspedisi": p.ekspedisi,
-                    "Tanggal": formatDateToDDMMYYYY(p.timestamp), 
-                    "Platform": p.platform,
-                    "Nama Toko": "", 
-                    "Kirim Resi": isDone || (statusLower !== "belum bayar" && statusLower !== "unpaid" && p.status !== ""),
-                    "Packing": isDone || ["perlu dikirim", "dikirim", "awaiting shipment", "shipped"].includes(statusLower),
-                    "Drop Off": isDone || ["dikirim", "shipped"].includes(statusLower),
-                    "Dikirim": isDone || ["dikirim", "shipped"].includes(statusLower),
-                    "Sampai": isDone,
-                    "Retur": statusLower.includes("pengembalian") || statusLower.includes("return"),
-                    "Keterangan": p.keterangan,
-                    "Omset Bersih": p.omset,
-                    "HPP": hppTotal,
-                    "Laba Bersih": labaBersih
-                };
+                p.items.forEach((it, idx) => {
+                    rowIndex++;
+                    let isFirst = idx === 0;
+                    let hargaModal = hppMap[cleanSKU(it.sku)];
+                    let hppLine = hargaModal !== undefined ? hargaModal * it.jumlah : "";
+
+                    // Omset & Laba Bersih cuma ditaruh di baris pertama tiap order (satu order = satu pencairan),
+                    // biar kalau kolomnya di-total di Excel nggak dobel kehitung.
+                    let omsetRow = isFirst ? p.omset : "";
+                    let labaRow = (isFirst && p.omset !== "" && semuaHargaKetemu) ? (p.omset - totalHPPOrder) : "";
+
+                    finalData.push({
+                        "No.": rowIndex,
+                        "No. Pesanan": p.noPesanan,
+                        "SKU": it.sku,
+                        "Nama Produk": it.namaProduk,
+                        "Jumlah": it.jumlah,
+                        "No. Resi": isFirst ? p.resi : "",
+                        "Ekspedisi": isFirst ? p.ekspedisi : "",
+                        "Tanggal": isFirst ? formatDateToDDMMYYYY(p.timestamp) : "",
+                        "Platform": isFirst ? p.platform : "",
+                        "Nama Toko": "",
+                        "Kirim Resi": isFirst ? (isDone || (statusLower !== "belum bayar" && statusLower !== "unpaid" && p.status !== "")) : "",
+                        "Packing": isFirst ? (isDone || ["perlu dikirim", "dikirim", "awaiting shipment", "shipped"].includes(statusLower)) : "",
+                        "Drop Off": isFirst ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
+                        "Dikirim": isFirst ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
+                        "Sampai": isFirst ? isDone : "",
+                        "Retur": isFirst ? (statusLower.includes("pengembalian") || statusLower.includes("return")) : "",
+                        "Keterangan": isFirst ? p.keterangan : "",
+                        "Omset Bersih": omsetRow,
+                        "HPP": hppLine,
+                        "Laba Bersih": labaRow
+                    });
+                });
             });
 
             renderPreview();
             
             let matched = pesananList.filter(p => p.omset !== "").length;
             let total = pesananList.length;
-            let hppMatched = pesananList.filter(p => hppMap[cleanSKU(p.sku)] !== undefined).length;
+            let totalItemLines = finalData.length;
+            let hppMatched = finalData.filter(r => r["HPP"] !== "").length;
 
             msg.style.backgroundColor = "#d4edda";
-            msg.innerText = `BOOM! Selesai! ${total} pesanan diproses, ${matched} cocok dengan data pencairan, ${hppMatched} cocok dengan data HPP (Bypass Mode Aktif).`;
+            msg.innerText = `BOOM! Selesai! ${total} pesanan (${totalItemLines} baris SKU) diproses, ${matched} order cocok dengan data pencairan, ${hppMatched} baris SKU cocok dengan data HPP (Bypass Mode Aktif).`;
             document.getElementById('btnDownload').style.display = "block";
 
         } catch (error) {
