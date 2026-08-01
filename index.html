@@ -102,7 +102,7 @@
 <div class="container">
     <div class="page-header">
         <h1>📊 Dashboard Penjualan ADV DIQI</h1>
-        <p>Upload file pesanan & pencairan Shopee + TikTok. Sistem otomatis menghitung omset, HPP, laba, status pesanan, dan biaya iklan.</p>
+        <p>Upload file pesanan & pencairan Shopee + TikTok. Data otomatis tersimpan di browser ini — kamu bisa upload data baru secara berkala (harian/mingguan/bulanan) dan sistem akan menggabungkannya dengan data yang sudah ada tanpa menghapus riwayat sebelumnya.</p>
     </div>
 
     <details id="uploadDetails" open>
@@ -132,7 +132,8 @@
                 </div>
             </div>
 
-            <button class="btn-block" onclick="prosesData()">Proses & Buat Dashboard</button>
+            <button class="btn-block" onclick="prosesData()">Proses & Gabungkan ke Dashboard</button>
+            <button class="btn-outline btn-block" onclick="resetAllData()" style="margin-top:8px; font-size:12.5px; padding:8px;">🗑️ Hapus Semua Data Tersimpan</button>
             <div id="statusMsg"></div>
         </div>
     </details>
@@ -206,6 +207,26 @@
         return String(id).replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     }
 
+    // Parser angka mata uang format Indonesia. Menangani "87.263" (titik = ribuan, artinya 87263)
+    // maupun "1.234.567,89" (titik ribuan + koma desimal), serta angka polos biasa.
+    function parseIDR(text) {
+        if (text === null || text === undefined) return NaN;
+        let s = String(text).trim().replace(/[Rp\s]/gi, '');
+        if (s === '') return NaN;
+        if (/,\d{1,2}$/.test(s)) {
+            // Format "1.234.567,89" -> desimal di koma
+            s = s.replace(/\./g, '').replace(',', '.');
+        } else if (/\.\d{1,2}$/.test(s)) {
+            // Titik diikuti 1-2 digit di akhir = desimal (pemisah ribuan selalu tepat 3 digit)
+            s = s.replace(/,/g, '');
+        } else {
+            // Titik/koma dianggap pemisah ribuan, dibuang semua
+            s = s.replace(/[.,]/g, '');
+        }
+        let n = parseFloat(s);
+        return isNaN(n) ? NaN : n;
+    }
+
     // Cleaner khusus SKU: trim + uppercase saja (SKU boleh punya tanda strip/underscore)
     function cleanSKU(sku) {
         if (!sku) return "";
@@ -225,7 +246,8 @@
     function computeDashboardData(orders, adEntries) {
         let d = {
             buckets: { "Selesai": 0, "Dibatalkan": 0, "Retur / Pengembalian": 0, "Diproses / Lainnya": 0, "Tanpa Status": 0 },
-            totalOmset: 0, totalHPP: 0, totalLaba: 0,
+            totalOmset: 0, totalGMV: 0, totalHPP: 0, totalLaba: 0,
+            pendingPencairanHPP: 0, pendingPencairanCount: 0,
             platform: {},
             adSpend: { shopee: 0, tiktok: 0 }
         };
@@ -233,8 +255,10 @@
             let bucket = classifyStatus(o.status, o.isCancelled);
             d.buckets[bucket] = (d.buckets[bucket] || 0) + 1;
             d.totalOmset += o.omset;
+            d.totalGMV += o.gmv || 0;
             d.totalHPP += o.hpp;
             if (o.labaKnown) d.totalLaba += o.laba;
+            if (o.isPending) { d.pendingPencairanHPP += o.hpp; d.pendingPencairanCount++; }
             let plat = o.platform || "Lainnya";
             if (!d.platform[plat]) d.platform[plat] = { orders: 0, omset: 0, hpp: 0, laba: 0 };
             d.platform[plat].orders++;
@@ -378,8 +402,7 @@
                 if (skuIdx !== -1 && hargaIdx !== -1) headerFound = true;
             } else {
                 let sku = cleanSKU(row[skuIdx]);
-                let hargaText = String(row[hargaIdx] || "").replace(/[Rp\s,]/gi, '');
-                let harga = parseFloat(hargaText);
+                let harga = parseIDR(row[hargaIdx]);
                 if (sku && !isNaN(harga)) {
                     map[sku] = harga;
                 }
@@ -415,7 +438,7 @@
         }
     }
 
-    window.addEventListener('DOMContentLoaded', loadHPPFromCache);
+    window.addEventListener('DOMContentLoaded', () => { loadHPPFromCache(); loadFromStorage(); });
     // ================================================================
 
     function parseDateCustom(dateStr) {
@@ -568,8 +591,7 @@
                 if (noPesIdx !== -1 && jumlahIdx !== -1) headerFound = true;
             } else {
                 let noPes = cleanID(row[noPesIdx]);
-                let uangText = String(row[jumlahIdx] || "").replace(/[Rp\s,]/gi, ''); 
-                let val = parseFloat(uangText);
+                let val = parseIDR(row[jumlahIdx]);
                 let dateVal = dateIdx !== -1 ? String(row[dateIdx]).trim() : "";
                 
                 if (isNaN(val)) val = undefined;
@@ -623,6 +645,144 @@
         return { orderMap: masterMap, adSpend: adSpendTotal, adSpendEntries: adSpendEntriesAll };
     }
 
+    // ============== PENYIMPANAN LOKAL (localStorage) — biar data nggak hilang saat refresh ==============
+    const LS_ORDERS = 'rekapAdvDiqi_ordersV2';
+    const LS_ADSPEND = 'rekapAdvDiqi_adSpendV2';
+    const LS_UPDATED = 'rekapAdvDiqi_lastUpdated';
+
+    function loadPersistedOrders() {
+        try { return JSON.parse(localStorage.getItem(LS_ORDERS)) || {}; } catch (e) { return {}; }
+    }
+    function loadPersistedAdSpend() {
+        try { return JSON.parse(localStorage.getItem(LS_ADSPEND)) || {}; } catch (e) { return {}; }
+    }
+    function savePersisted(ordersMap, adSpendMap) {
+        localStorage.setItem(LS_ORDERS, JSON.stringify(ordersMap));
+        localStorage.setItem(LS_ADSPEND, JSON.stringify(adSpendMap));
+        localStorage.setItem(LS_UPDATED, new Date().toISOString());
+    }
+
+    function resetAllData() {
+        if (!confirm("Hapus semua data pesanan & pencairan yang tersimpan? Data HPP tidak ikut terhapus.")) return;
+        localStorage.removeItem(LS_ORDERS);
+        localStorage.removeItem(LS_ADSPEND);
+        localStorage.removeItem(LS_UPDATED);
+        allOrders = []; allAdSpendEntries = []; finalData = [];
+        document.getElementById('dashArea').style.display = "none";
+        const msg = document.getElementById('statusMsg');
+        msg.className = ""; msg.innerText = "";
+        document.getElementById('uploadSummaryInfo').innerText = "";
+        document.getElementById('btnDownload').style.display = "none";
+        document.getElementById('uploadDetails').open = true;
+    }
+
+    // Bangun ulang finalData & allOrders dari sebuah pesananMap (dipakai baik sesudah upload baru maupun saat load dari cache)
+    function buildOutputsFromPesananMap(pesananMap) {
+        let pesananList = Object.values(pesananMap);
+        pesananList.sort((a, b) => a.timestamp - b.timestamp);
+
+        finalData = [];
+        allOrders = [];
+        let rowIndex = 0;
+
+        pesananList.forEach(p => {
+            let statusLower = p.status.toLowerCase();
+            let isDone = statusLower === "selesai" || statusLower === "completed" || statusLower === "delivered" || (p.omset !== undefined && p.omset !== "");
+
+            let totalHPPOrder = 0;
+            let semuaHargaKetemu = true;
+            if (!p.isCancelled) {
+                p.items.forEach(it => {
+                    let hargaModal = hppMap[cleanSKU(it.sku)];
+                    if (hargaModal === undefined) semuaHargaKetemu = false;
+                    else totalHPPOrder += hargaModal * it.jumlah;
+                });
+            }
+
+            let isPending = !p.isCancelled && (p.omset === "" || p.omset === undefined);
+            let orderOmset = (!p.isCancelled && p.omset !== "") ? p.omset : 0;
+            let orderHPP = p.isCancelled ? 0 : totalHPPOrder;
+            let orderGMV = p.isCancelled ? 0 : (p.gmv || 0);
+            let orderLaba = (!p.isCancelled && p.omset !== "" && semuaHargaKetemu) ? (p.omset - totalHPPOrder) : 0;
+            let labaKnown = (!p.isCancelled && p.omset !== "" && semuaHargaKetemu);
+            allOrders.push({
+                platform: p.platform,
+                timestamp: p.timestamp,
+                status: p.status,
+                isCancelled: p.isCancelled,
+                isPending: isPending,
+                omset: orderOmset,
+                gmv: orderGMV,
+                hpp: orderHPP,
+                laba: orderLaba,
+                labaKnown: labaKnown
+            });
+
+            p.items.forEach((it, idx) => {
+                rowIndex++;
+                let isFirst = idx === 0;
+                let hargaModal = hppMap[cleanSKU(it.sku)];
+                let hppLine = (!p.isCancelled && hargaModal !== undefined) ? hargaModal * it.jumlah : "";
+                let omsetRow = (isFirst && !p.isCancelled) ? p.omset : "";
+                let labaRow = (isFirst && !p.isCancelled && p.omset !== "" && semuaHargaKetemu) ? (p.omset - totalHPPOrder) : "";
+
+                finalData.push({
+                    "No.": rowIndex,
+                    "No. Pesanan": p.noPesanan,
+                    "SKU": it.sku,
+                    "Nama Produk": it.namaProduk,
+                    "Jumlah": it.jumlah,
+                    "No. Resi": isFirst ? p.resi : "",
+                    "Ekspedisi": isFirst ? p.ekspedisi : "",
+                    "Tanggal": isFirst ? formatDateToDDMMYYYY(p.timestamp) : "",
+                    "Platform": isFirst ? p.platform : "",
+                    "Status Pesanan": isFirst ? p.status : "",
+                    "Nama Toko": "",
+                    "Kirim Resi": (isFirst && !p.isCancelled) ? (isDone || (statusLower !== "belum bayar" && statusLower !== "unpaid" && p.status !== "")) : "",
+                    "Packing": (isFirst && !p.isCancelled) ? (isDone || ["perlu dikirim", "dikirim", "awaiting shipment", "shipped"].includes(statusLower)) : "",
+                    "Drop Off": (isFirst && !p.isCancelled) ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
+                    "Dikirim": (isFirst && !p.isCancelled) ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
+                    "Sampai": (isFirst && !p.isCancelled) ? isDone : "",
+                    "Retur": isFirst ? (statusLower.includes("pengembalian") || statusLower.includes("return")) : "",
+                    "Keterangan": isFirst ? p.keterangan : "",
+                    "Omset Bersih": omsetRow,
+                    "HPP": hppLine,
+                    "Laba Bersih": labaRow
+                });
+            });
+        });
+    }
+
+    function showDashboardFromCurrentData(statusText, statusClass) {
+        let latestTs = allOrders.reduce((max, o) => o.timestamp > max ? o.timestamp : max, 0);
+        periodState.granularity = document.getElementById('periodGranularity').value || 'month';
+        periodState.refDate = latestTs ? new Date(latestTs) : new Date();
+
+        filterByPeriod();
+        renderPreview();
+
+        const msg = document.getElementById('statusMsg');
+        msg.className = statusClass;
+        msg.innerText = statusText;
+        document.getElementById('btnDownload').style.display = "block";
+        document.getElementById('uploadDetails').open = false;
+        document.getElementById('uploadSummaryInfo').innerText = `— ${allOrders.length} pesanan tersimpan`;
+    }
+
+    // Muat data tersimpan (kalau ada) begitu halaman dibuka
+    function loadFromStorage() {
+        let persistedOrders = loadPersistedOrders();
+        let persistedAdSpend = loadPersistedAdSpend();
+        if (Object.keys(persistedOrders).length === 0) return;
+
+        allAdSpendEntries = Object.values(persistedAdSpend);
+        buildOutputsFromPesananMap(persistedOrders);
+
+        let lastUpdated = localStorage.getItem(LS_UPDATED);
+        let lastUpdatedStr = lastUpdated ? new Date(lastUpdated).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : '-';
+        showDashboardFromCurrentData(`Menampilkan data tersimpan (${allOrders.length} pesanan). Terakhir diupdate: ${lastUpdatedStr}.`, "info");
+    }
+
     async function prosesData() {
         const msg = document.getElementById('statusMsg');
         const fPesananFiles = document.getElementById('fPesanan').files;
@@ -638,8 +798,7 @@
 
         try {
             const { orderMap: masterSaldoMap, adSpend, adSpendEntries } = await getCombinedSaldo(fSaldoFiles);
-            allAdSpendEntries = adSpendEntries;
-            let pesananMap = {};
+            let newPesananMap = {};
 
             for (let i = 0; i < fPesananFiles.length; i++) {
                 let ordData = await readExcelObj(fPesananFiles[i]);
@@ -673,8 +832,8 @@
 
                     // Kalau order-nya udah pernah ada tapi ini baris SKU/produk lain (order isi >1 jenis barang),
                     // catat sebagai item terpisah biar HPP-nya nggak rancu, bukan cuma nambah jumlah ke SKU pertama.
-                    if (pesananMap[noPesanan]) {
-                        pesananMap[noPesanan].items.push({ sku: sku, namaProduk: namaProduk, jumlah: jumlah });
+                    if (newPesananMap[noPesanan]) {
+                        newPesananMap[noPesanan].items.push({ sku: sku, namaProduk: namaProduk, jumlah: jumlah });
                         return;
                     }
 
@@ -695,8 +854,10 @@
 
                     let tanggalAsli = pClean["Waktu Pesanan Dibuat"] || pClean["Created Time"] || pClean["Waktu Dibuat"] || saldoInfo.date || "";
                     let ekspedisi = pClean["Opsi Pengiriman"] || pClean["Shipping Provider Name"] || pClean["Shipping Provider"] || pClean["Penyedia Pengiriman"] || "";
+                    let gmv = parseIDR(pClean["Total Pembayaran"] !== undefined ? pClean["Total Pembayaran"] : pClean["Order Amount"]);
+                    if (isNaN(gmv)) gmv = 0;
 
-                    pesananMap[noPesanan] = {
+                    newPesananMap[noPesanan] = {
                         platform: platform,
                         noPesanan: noPesanan,
                         status: status,
@@ -706,105 +867,36 @@
                         ekspedisi: ekspedisi,
                         timestamp: parseDateCustom(tanggalAsli),
                         keterangan: pClean["Catatan dari Pembeli"] || pClean["Buyer Message"] || pClean["Catatan"] || "",
-                        omset: saldoInfo.omset !== undefined ? saldoInfo.omset : ""
+                        omset: saldoInfo.omset !== undefined ? saldoInfo.omset : "",
+                        gmv: gmv
                     };
                 });
             }
 
-            let pesananList = Object.values(pesananMap);
-            pesananList.sort((a, b) => a.timestamp - b.timestamp);
+            // --- Merge dengan data yang sudah tersimpan sebelumnya ---
+            // Order dengan No. Pesanan yang sama akan di-update (data terbaru menang); order lama yang tidak
+            // ikut terupload lagi tetap dipertahankan. Ini yang bikin bisa nambah data berkala tanpa upload ulang semuanya.
+            let persistedOrders = loadPersistedOrders();
+            let persistedAdSpend = loadPersistedAdSpend();
 
-            finalData = [];
-            allOrders = [];
-            let rowIndex = 0;
-
-            pesananList.forEach(p => {
-                let statusLower = p.status.toLowerCase();
-                let isDone = statusLower === "selesai" || statusLower === "completed" || statusLower === "delivered" || (p.omset !== undefined && p.omset !== "");
-
-                // Hitung total HPP order = jumlah HPP semua item/SKU di dalam order ini (skip kalau dibatalkan)
-                let totalHPPOrder = 0;
-                let semuaHargaKetemu = true;
-                if (!p.isCancelled) {
-                    p.items.forEach(it => {
-                        let hargaModal = hppMap[cleanSKU(it.sku)];
-                        if (hargaModal === undefined) semuaHargaKetemu = false;
-                        else totalHPPOrder += hargaModal * it.jumlah;
-                    });
-                }
-
-                // --- Simpan data level-order untuk keperluan filter periode ---
-                let orderOmset = (!p.isCancelled && p.omset !== "") ? p.omset : 0;
-                let orderHPP = p.isCancelled ? 0 : totalHPPOrder;
-                let orderLaba = (!p.isCancelled && p.omset !== "" && semuaHargaKetemu) ? (p.omset - totalHPPOrder) : 0;
-                let labaKnown = (!p.isCancelled && p.omset !== "" && semuaHargaKetemu);
-                allOrders.push({
-                    platform: p.platform,
-                    timestamp: p.timestamp,
-                    status: p.status,
-                    isCancelled: p.isCancelled,
-                    omset: orderOmset,
-                    hpp: orderHPP,
-                    laba: orderLaba,
-                    labaKnown: labaKnown
-                });
-                // --------------------------------------------
-
-                p.items.forEach((it, idx) => {
-                    rowIndex++;
-                    let isFirst = idx === 0;
-                    let hargaModal = hppMap[cleanSKU(it.sku)];
-                    let hppLine = (!p.isCancelled && hargaModal !== undefined) ? hargaModal * it.jumlah : "";
-
-                    // Omset & Laba Bersih cuma ditaruh di baris pertama tiap order (satu order = satu pencairan),
-                    // biar kalau kolomnya di-total di Excel nggak dobel kehitung. Pesanan dibatalkan = 0 omset/laba.
-                    let omsetRow = (isFirst && !p.isCancelled) ? p.omset : "";
-                    let labaRow = (isFirst && !p.isCancelled && p.omset !== "" && semuaHargaKetemu) ? (p.omset - totalHPPOrder) : "";
-
-                    finalData.push({
-                        "No.": rowIndex,
-                        "No. Pesanan": p.noPesanan,
-                        "SKU": it.sku,
-                        "Nama Produk": it.namaProduk,
-                        "Jumlah": it.jumlah,
-                        "No. Resi": isFirst ? p.resi : "",
-                        "Ekspedisi": isFirst ? p.ekspedisi : "",
-                        "Tanggal": isFirst ? formatDateToDDMMYYYY(p.timestamp) : "",
-                        "Platform": isFirst ? p.platform : "",
-                        "Status Pesanan": isFirst ? p.status : "",
-                        "Nama Toko": "",
-                        "Kirim Resi": (isFirst && !p.isCancelled) ? (isDone || (statusLower !== "belum bayar" && statusLower !== "unpaid" && p.status !== "")) : "",
-                        "Packing": (isFirst && !p.isCancelled) ? (isDone || ["perlu dikirim", "dikirim", "awaiting shipment", "shipped"].includes(statusLower)) : "",
-                        "Drop Off": (isFirst && !p.isCancelled) ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
-                        "Dikirim": (isFirst && !p.isCancelled) ? (isDone || ["dikirim", "shipped"].includes(statusLower)) : "",
-                        "Sampai": (isFirst && !p.isCancelled) ? isDone : "",
-                        "Retur": isFirst ? (statusLower.includes("pengembalian") || statusLower.includes("return")) : "",
-                        "Keterangan": isFirst ? p.keterangan : "",
-                        "Omset Bersih": omsetRow,
-                        "HPP": hppLine,
-                        "Laba Bersih": labaRow
-                    });
-                });
+            for (let key in newPesananMap) persistedOrders[key] = newPesananMap[key];
+            adSpendEntries.forEach(e => {
+                let key = `${e.platform}_${e.timestamp}_${e.amount}`;
+                persistedAdSpend[key] = e;
             });
 
-            // Default: tampilkan periode bulan dari transaksi paling baru di data
-            let latestTs = allOrders.reduce((max, o) => o.timestamp > max ? o.timestamp : max, 0);
-            periodState.granularity = document.getElementById('periodGranularity').value || 'month';
-            periodState.refDate = latestTs ? new Date(latestTs) : new Date();
-
-            filterByPeriod();
-            renderPreview();
+            savePersisted(persistedOrders, persistedAdSpend);
+            allAdSpendEntries = Object.values(persistedAdSpend);
+            buildOutputsFromPesananMap(persistedOrders);
 
             let totalItemLines = finalData.length;
             let hppMatched = finalData.filter(r => r["HPP"] !== "").length;
+            let jumlahBaru = Object.keys(newPesananMap).length;
 
-            msg.className = "success";
-            msg.innerText = `${allOrders.length} pesanan (${totalItemLines} baris SKU) berhasil diproses. ${hppMatched} baris cocok dengan data HPP.`;
-            document.getElementById('btnDownload').style.display = "block";
-
-            // Minimize panel upload, tampilkan ringkasan singkat
-            document.getElementById('uploadDetails').open = false;
-            document.getElementById('uploadSummaryInfo').innerText = `— ${allOrders.length} pesanan diproses`;
+            showDashboardFromCurrentData(
+                `${jumlahBaru} pesanan baru diproses dan digabung ke data tersimpan. Total sekarang: ${allOrders.length} pesanan (${totalItemLines} baris SKU), ${hppMatched} baris cocok dengan data HPP.`,
+                "success"
+            );
 
         } catch (error) {
             console.error(error);
@@ -843,14 +935,16 @@
 
         // --- Kartu ringkasan keuangan ---
         let totalAdSpend = d.adSpend.shopee + d.adSpend.tiktok;
-        let labaBersihFinal = d.totalLaba - totalAdSpend; // Omset - HPP - Iklan
+        let labaBersihFinal = d.totalLaba - totalAdSpend; // Pencairan - HPP - Iklan
         let ratioAds = d.totalOmset > 0 ? (totalAdSpend / d.totalOmset * 100).toFixed(1) : "0.0";
 
         const financeCards = [
-            { lbl: "Omset Bersih", val: fmtRupiah(d.totalOmset), cls: "navy", sub: "" },
+            { lbl: "Total Omzet / GMV", val: fmtRupiah(d.totalGMV), cls: "blue", sub: "Nilai transaksi kotor sebelum potongan" },
+            { lbl: "Pencairan", val: fmtRupiah(d.totalOmset), cls: "navy", sub: "Dana yang sudah cair dari platform" },
             { lbl: "Total HPP (Modal)", val: fmtRupiah(d.totalHPP), cls: "amber", sub: "" },
-            { lbl: "Biaya Iklan", val: fmtRupiah(totalAdSpend), cls: "red", sub: `Shopee ${fmtRupiah(d.adSpend.shopee)} • TikTok ${fmtRupiah(d.adSpend.tiktok)} (${ratioAds}% dari omset)` },
-            { lbl: "Laba Bersih", val: fmtRupiah(labaBersihFinal), cls: labaBersihFinal >= 0 ? "green" : "red", sub: "Omset - HPP - Biaya Iklan" }
+            { lbl: "Biaya Iklan", val: fmtRupiah(totalAdSpend), cls: "red", sub: `Shopee ${fmtRupiah(d.adSpend.shopee)} • TikTok ${fmtRupiah(d.adSpend.tiktok)} (${ratioAds}% dari pencairan)` },
+            { lbl: "Pending Pencairan", val: fmtRupiah(d.pendingPencairanHPP), cls: "amber", sub: `${d.pendingPencairanCount} pesanan belum cair — sementara ditampilkan sebesar HPP-nya` },
+            { lbl: "Laba Bersih", val: fmtRupiah(labaBersihFinal), cls: labaBersihFinal >= 0 ? "green" : "red", sub: "Pencairan - HPP - Biaya Iklan" }
         ];
         document.getElementById('financeStats').innerHTML = financeCards.map(c => `
             <div class="stat-card ${c.cls}">
@@ -858,7 +952,7 @@
                 <div class="val" style="font-size:18px;">${c.val}</div>
                 <div class="sub">${c.sub}</div>
             </div>`).join('');
-        document.getElementById('financeStats').style.gridTemplateColumns = "repeat(4,1fr)";
+        document.getElementById('financeStats').style.gridTemplateColumns = "repeat(3,1fr)";
 
         // --- Breakdown status (bar) ---
         const colors = { "Selesai": "var(--green)", "Dibatalkan": "var(--red)", "Retur / Pengembalian": "var(--amber)", "Diproses / Lainnya": "var(--blue)", "Tanpa Status": "#9aa4bf" };
