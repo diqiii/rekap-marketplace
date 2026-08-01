@@ -44,6 +44,7 @@
         .stat-card.red { border-left-color:var(--red); } .stat-card.red .val{ color:var(--red); }
         .stat-card.amber { border-left-color:var(--amber); } .stat-card.amber .val{ color:var(--amber); }
         .stat-card.navy { border-left-color:var(--navy-2); } .stat-card.navy .val{ color:var(--navy-2); }
+        .stat-card.blue { border-left-color:var(--blue); } .stat-card.blue .val{ color:var(--blue); }
         .two-col { display:grid; grid-template-columns:1.1fr .9fr; gap:16px; margin-top: 6px; }
         .panel { background:#fff; border-radius:12px; padding:18px 20px; border:1px solid var(--border); }
         .bar-row { margin-bottom:12px; }
@@ -375,7 +376,7 @@
         if (!rawArray) return { map, adSpend };
 
         let headerFound = false;
-        let noPesIdx = -1, jumlahIdx = -1, dateIdx = -1, descIdx = -1;
+        let noPesIdx = -1, jumlahIdx = -1, dateIdx = -1, descIdxPrimary = -1, descIdxFallback = -1;
 
         for (let i = 0; i < rawArray.length; i++) {
             const row = rawArray[i];
@@ -398,8 +399,14 @@
                     if (cellStr.includes("waktu transaksi") || cellStr.includes("order created time") || cellStr.includes("waktu pesanan dibuat")) {
                         dateIdx = j;
                     }
-                    if (cellStr.includes("keterangan") || cellStr.includes("jenis transaksi") || cellStr.includes("tipe transaksi") || cellStr.includes("nama transaksi") || cellStr.includes("description") || cellStr.includes("remark") || cellStr.includes("catatan")) {
-                        descIdx = j;
+                    // Prioritas 1: kolom deskripsi/teks bebas (paling akurat isi keterangannya)
+                    if (cellStr.includes("deskripsi") || cellStr.includes("description") || cellStr.includes("catatan") || cellStr.includes("remark")) {
+                        descIdxPrimary = j;
+                    }
+                    // Prioritas 2 (fallback): kolom jenis/tipe transaksi — kadang cuma berisi arah (masuk/keluar), 
+                    // jadi cuma dipakai kalau kolom deskripsi beneran nggak ketemu
+                    if (cellStr.includes("keterangan") || cellStr.includes("jenis transaksi") || cellStr.includes("tipe transaksi") || cellStr.includes("nama transaksi")) {
+                        descIdxFallback = j;
                     }
                 }
                 if (noPesIdx !== -1 && jumlahIdx !== -1) headerFound = true;
@@ -411,12 +418,13 @@
                 
                 if (isNaN(val)) val = undefined;
 
-                // Baris biaya iklan (bukan baris order) — dikenali dari kolom keterangan/jenis transaksi
+                // Baris biaya iklan (bukan baris order) — dikenali dari kolom deskripsi/jenis transaksi
+                let descIdx = descIdxPrimary !== -1 ? descIdxPrimary : descIdxFallback;
                 if (descIdx !== -1) {
                     let desc = String(row[descIdx] || "").toLowerCase();
                     if (desc.includes("isi ulang") && desc.includes("iklan")) {
                         adSpend.shopee += Math.abs(val || 0);
-                    } else if (desc.includes("pembayaran iklan") || (desc.includes("iklan") && desc.includes("gmv"))) {
+                    } else if (desc.includes("pembayaran iklan") || desc.includes("gmv pay deduction") || (desc.includes("iklan") && desc.includes("gmv"))) {
                         adSpend.tiktok += Math.abs(val || 0);
                     }
                 }
@@ -659,6 +667,7 @@
         const orderCards = [
             { lbl: "Total Pesanan", val: total, cls: "navy", sub: "Semua status" },
             { lbl: "Selesai", val: d.buckets["Selesai"], cls: "green", sub: (d.buckets["Selesai"]/total*100).toFixed(1)+"% dari total" },
+            { lbl: "Diproses / Dikirim", val: d.buckets["Diproses / Lainnya"] + d.buckets["Tanpa Status"], cls: "blue", sub: "Belum sampai / belum selesai" },
             { lbl: "Dibatalkan", val: d.buckets["Dibatalkan"], cls: "red", sub: (d.buckets["Dibatalkan"]/total*100).toFixed(1)+"% dari total" },
             { lbl: "Retur / Pengembalian", val: d.buckets["Retur / Pengembalian"], cls: "amber", sub: (d.buckets["Retur / Pengembalian"]/total*100).toFixed(1)+"% dari total" }
         ];
@@ -668,26 +677,26 @@
                 <div class="val">${c.val}</div>
                 <div class="sub">${c.sub}</div>
             </div>`).join('');
+        document.getElementById('orderStats').style.gridTemplateColumns = "repeat(5,1fr)";
 
         // --- Kartu ringkasan keuangan ---
         let totalAdSpend = d.adSpend.shopee + d.adSpend.tiktok;
-        let labaBersihSetelahIklan = d.totalLaba - totalAdSpend;
+        let labaBersihFinal = d.totalLaba - totalAdSpend; // Omset - HPP - Iklan
         let ratioAds = d.totalOmset > 0 ? (totalAdSpend / d.totalOmset * 100).toFixed(1) : "0.0";
 
         const financeCards = [
             { lbl: "Omset Bersih", val: fmtRupiah(d.totalOmset), cls: "navy", sub: "" },
             { lbl: "Total HPP (Modal)", val: fmtRupiah(d.totalHPP), cls: "amber", sub: "" },
-            { lbl: "Laba Kotor", val: fmtRupiah(d.totalLaba), cls: "green", sub: "Omset - HPP" },
             { lbl: "Biaya Iklan", val: fmtRupiah(totalAdSpend), cls: "red", sub: `Shopee ${fmtRupiah(d.adSpend.shopee)} • TikTok ${fmtRupiah(d.adSpend.tiktok)} (${ratioAds}% dari omset)` },
-            { lbl: "Laba Bersih Setelah Iklan", val: fmtRupiah(labaBersihSetelahIklan), cls: labaBersihSetelahIklan >= 0 ? "green" : "red", sub: "Laba Kotor - Biaya Iklan" }
+            { lbl: "Laba Bersih", val: fmtRupiah(labaBersihFinal), cls: labaBersihFinal >= 0 ? "green" : "red", sub: "Omset - HPP - Biaya Iklan" }
         ];
         document.getElementById('financeStats').innerHTML = financeCards.map(c => `
             <div class="stat-card ${c.cls}">
                 <div class="lbl">${c.lbl}</div>
-                <div class="val" style="font-size:17px;">${c.val}</div>
+                <div class="val" style="font-size:18px;">${c.val}</div>
                 <div class="sub">${c.sub}</div>
             </div>`).join('');
-        document.getElementById('financeStats').style.gridTemplateColumns = "repeat(5,1fr)";
+        document.getElementById('financeStats').style.gridTemplateColumns = "repeat(4,1fr)";
 
         // --- Breakdown status (bar) ---
         const colors = { "Selesai": "var(--green)", "Dibatalkan": "var(--red)", "Retur / Pengembalian": "var(--amber)", "Diproses / Lainnya": "var(--blue)", "Tanpa Status": "#9aa4bf" };
